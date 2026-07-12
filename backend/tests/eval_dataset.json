@@ -1,0 +1,32 @@
+[
+  {
+    "id": "tc-1",
+    "query": "How do I configure the frontend and start the developer server?",
+    "target_file": "developer_setup.md",
+    "expected_concepts": ["npm", "dev", "5173"]
+  },
+  {
+    "id": "tc-2",
+    "query": "What permissions and scopes should be set for the GitHub PAT?",
+    "target_file": "security_guidelines.md",
+    "expected_concepts": ["privilege", "contents", "issues"]
+  },
+  {
+    "id": "tc-3",
+    "query": "Where does the vector database store its indexes on local disk?",
+    "target_file": "sample_setup.pdf",
+    "expected_concepts": ["document_store.json"]
+  },
+  {
+    "id": "tc-4",
+    "query": "What happens when the LLM orchestrator intercepts a destructive tool?",
+    "target_file": "sample_setup.pdf",
+    "expected_concepts": ["confirm", "modal"]
+  },
+  {
+    "id": "tc-5",
+    "query": "Is it safe to store API keys directly in the Git repository?",
+    "target_file": "security_guidelines.md",
+    "expected_concepts": ["not commit", "env"]
+  }
+]

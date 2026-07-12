@@ -1,0 +1,7 @@
+Given the following conversation history and a follow-up query, rewrite the query to be a self-contained, detailed search query that captures all necessary context. Output ONLY the rewritten query text. Do not include any chat formatting, prefixes, or explanations.
+
+History:
+{history}
+
+Follow-up Query: {query}
+Self-contained Query:
