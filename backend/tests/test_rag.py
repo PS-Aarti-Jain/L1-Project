@@ -76,8 +76,12 @@ def run_rag_test():
     # Clean up test database folder
     try:
         import shutil
-        shutil.rmtree(os.environ["CHROMA_DB_DIR"])
-        print("Cleaned up test Chroma DB directory.")
+        if os.path.exists(os.environ["QDRANT_DB_DIR"]):
+            shutil.rmtree(os.environ["QDRANT_DB_DIR"])
+            print("Cleaned up test Qdrant DB directory.")
+        if os.path.exists(os.environ["CHROMA_DB_DIR"]):
+            shutil.rmtree(os.environ["CHROMA_DB_DIR"])
+            print("Cleaned up test Chroma DB directory.")
     except Exception as e:
         print(f"Warning: could not clean up test db dir: {e}")
 

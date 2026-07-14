@@ -28,8 +28,8 @@ This project is built from scratch as a single, coherent application demonstrati
                                          │                           │
                              ┌───────────▼────────────┐   ┌──────────▼─────────────────┐
                              │   RAG Subsystem          │   │  MCP Client → MCP Server    │
-                             │  - Pure Python DB        │   │  - github_search_code       │
-                             │  - Flat index / Cosine   │   │  - github_create_issue      │
+                             │  - Qdrant Vector DB      │   │  - github_search_code       │
+                             │  - HNSW Index / Cosine   │   │  - github_create_issue      │
                              │  - Keyword fallback      │   │  - github_comment_pr        │
                              │  - Markdown & PDF parser │   │  - Stdio transport link     │
                              └──────────────────────────┘   └──────────────┬─────────────┘
@@ -43,7 +43,7 @@ This project is built from scratch as a single, coherent application demonstrati
 ### Component Details
 1. **Frontend (React)**: A single-page dashboard built with Vite, styled with a premium dark cyber aesthetic using Vanilla CSS. Includes a real-time message stream, interactive document citation sidebar, execution timeline tracker, action confirmation prompt, and a **RAG Quality Metrics monitor**.
 2. **FastAPI Orchestrator**: The backend server which manages JWT sessions, parses chat request threads, triggers query rewrites, retrieves local documentation context (RAG), and routes actions to a standalone GitHub MCP server process.
-3. **Resilient Vector Database**: A pure-Python vector and keyword store in `database.py`. It operates locally on a JSON-file database (`backend/chroma_db/document_store.json`). It calculates cosine similarity using Gemini embeddings if online, and automatically falls back to a custom word-frequency relevance check if offline, avoiding native compiled C++/Rust binding failures (ChromaDB dll blocks) on Windows hosts.
+3. **Resilient Vector Database**: A disk-persistent Qdrant vector database store in `database.py`. It operates locally under the `backend/qdrant_db/` directory. It uses HNSW graph indexing for fast semantic vector search, coupled with a custom Hybrid Lexical-Semantic Reranker (combining cosine similarity with TF-IDF keyword overlap). Includes a fallback local word-frequency keyword search if the embedding service is offline.
 4. **GitHub MCP Server**: A standalone process in `github_mcp.py` exposing GitHub API tools through the Model Context Protocol (MCP). It runs as a lifecycle-managed stdio subprocess of the orchestrator.
 
 ---
@@ -53,7 +53,7 @@ This project is built from scratch as a single, coherent application demonstrati
 1. **User Query**: User sends a natural language question in the React Chat panel.
 2. **Context Enrichment & Query Rewrite**: The orchestrator evaluates context history and generates a self-contained query using the active LLM.
 3. **RAG Retrieval**: 
-   - The query search string is sent to the local `document_store.json`.
+   - The query search string is sent to the local Qdrant vector database.
    - The DB computes similarity matches and returns matching chunks.
    - Grounded context is formatted and appended to the LLM system prompt.
 4. **Model Execution**:
