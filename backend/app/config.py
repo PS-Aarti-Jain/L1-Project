@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     
     # RAG Settings
     CHROMA_DB_DIR: str = Field(default=str(BASE_DIR / "chroma_db"))
+    QDRANT_DB_DIR: str = Field(default=str(BASE_DIR / "qdrant_db"))
     DOCS_DIR: str = Field(default=str(BASE_DIR.parent / "docs"))
     
     # Model settings

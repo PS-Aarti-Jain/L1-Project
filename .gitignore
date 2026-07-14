@@ -15,6 +15,7 @@ dist/
 # Database state files and secrets
 backend/.env
 backend/chroma_db/document_store.json
+backend/qdrant_db/
 backend/tests/eval_results.json
 
 # IDE / editor specific files

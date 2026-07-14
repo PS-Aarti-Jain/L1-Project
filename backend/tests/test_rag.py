@@ -11,6 +11,7 @@ os.environ["GEMINI_API_KEY"] = ""  # Force local ONNX embeddings
 os.environ["GITHUB_PAT"] = "fake-pat"
 os.environ["GITHUB_REPOSITORY"] = "fake/repo"
 os.environ["CHROMA_DB_DIR"] = str(backend_dir / "test_chroma_db")
+os.environ["QDRANT_DB_DIR"] = str(backend_dir / "test_qdrant_db")
 os.environ["DOCS_DIR"] = str(backend_dir.parent / "docs")
 
 from app.database import get_vector_store
