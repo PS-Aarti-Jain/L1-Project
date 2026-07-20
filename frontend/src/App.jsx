@@ -368,6 +368,19 @@ export default function App() {
             <div style={{ fontSize: '11px', color: 'var(--text-muted)', textAlign: 'center', marginTop: '4px' }}>
               Demo access: use admin / password123
             </div>
+            <div style={{ 
+              fontSize: '11px', 
+              color: 'var(--color-warning)', 
+              background: 'rgba(245, 158, 11, 0.1)', 
+              border: '1px solid rgba(245, 158, 11, 0.2)',
+              padding: '10px', 
+              borderRadius: '4px', 
+              textAlign: 'center', 
+              marginTop: '15px',
+              lineHeight: '1.4'
+            }}>
+              ⚠️ <strong>SECURITY DISCLAIMER:</strong> This console is configured with local demonstration authentication (unsalted SHA-256 hashing, default credentials, browser local storage). It is strictly prohibited to expose this interface to public networks or run it in production.
+            </div>
           </div>
         </form>
       </div>

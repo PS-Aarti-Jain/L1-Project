@@ -12,4 +12,7 @@ anthropic>=0.21.3
 python-dotenv>=1.0.1
 pypdf>=4.0.0
 qdrant-client>=1.18.0
+openai>=2.44.0
+fastembed>=0.8.0
+sentence-transformers>=2.3.0
 

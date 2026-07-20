@@ -8,12 +8,12 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 
-from app.config import settings
-from app.auth import create_access_token, get_current_user, verify_password, MOCK_USERS
-from app.database import get_vector_store
-from app.ingestion import ingest_directory
-from app.mcp_client import get_mcp_client
-from app.llm import LLMOrchestrator
+from .config import settings
+from .auth import create_access_token, get_current_user, verify_password, MOCK_USERS
+from .database import get_vector_store
+from .ingestion import ingest_directory
+from .mcp_client import get_mcp_client
+from .llm import LLMOrchestrator
 from pathlib import Path
 import os
 
@@ -181,7 +181,7 @@ async def chat(request: ChatRequest, current_user: dict = Depends(get_current_us
                 yield json.dumps({"type": "trace", "stage": "Query Rewriting", "details": f"Refined search query: '{rewritten}'"}) + "\n"
 
         # Step B: Run the agent conversation turn
-        async for event in orchestrator.execute_chat_turn(history_dicts, pending_confirms):
+        async for event in orchestrator.execute_chat_turn(history_dicts, pending_confirms, username=current_user["username"]):
             yield json.dumps(event) + "\n"
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")
@@ -192,6 +192,7 @@ async def confirm_action(request: ConfirmRequest, current_user: dict = Depends(g
     Confirms or cancels a pending destructive action (e.g. creating an issue).
     If approved, executes the tool on the MCP server and continues conversation.
     """
+    import time
     conf_id = request.confirmation_id
     if conf_id not in pending_confirms:
         raise HTTPException(
@@ -199,11 +200,50 @@ async def confirm_action(request: ConfirmRequest, current_user: dict = Depends(g
             detail=f"Confirmation session '{conf_id}' not found or already completed."
         )
         
-    pending = pending_confirms.pop(conf_id)
+    pending = pending_confirms[conf_id]
+    
+    # 1. Bind pending actions to user/session
+    if pending.get("username") != current_user["username"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to confirm this action."
+        )
+        
+    # 2. Expire pending actions (e.g., after 10 minutes)
+    if time.time() - pending.get("created_at", 0) > 600:
+        pending_confirms.pop(conf_id)
+        raise HTTPException(
+            status_code=status.HTTP_408_REQUEST_TIMEOUT,
+            detail="Confirmation session has expired."
+        )
+        
+    pending_confirms.pop(conf_id)
     tool_name = pending["tool_name"]
     arguments = request.edited_arguments or pending["arguments"]
     history = pending["history"]  # retrieves history up to the interception
     
+    # 3. Revalidate repository scope and edited arguments schema at execution time
+    repo = arguments.get("repo")
+    if repo and repo.lower() != settings.GITHUB_REPOSITORY.lower():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Access denied: repository '{repo}' is outside the authorized scope '{settings.GITHUB_REPOSITORY}'."
+        )
+        
+    if tool_name == "github_create_issue":
+        if not arguments.get("title") or not isinstance(arguments.get("title"), str):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid parameter 'title'")
+        if not arguments.get("body") or not isinstance(arguments.get("body"), str):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid parameter 'body'")
+    elif tool_name == "github_comment_pr":
+        try:
+            pr_num = int(arguments.get("pr_number"))
+            arguments["pr_number"] = pr_num
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid parameter 'pr_number'")
+        if not arguments.get("comment") or not isinstance(arguments.get("comment"), str):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing or invalid parameter 'comment'")
+
     if not request.approved:
         logger.info(f"User rejected action {tool_name} for confirmation ID {conf_id}")
         
@@ -217,12 +257,14 @@ async def confirm_action(request: ConfirmRequest, current_user: dict = Depends(g
                 "content": f"Action cancelled by the user. Do not call this tool again. Inform the user you aborted."
             })
             # Resume conversation
-            async for event in orchestrator.execute_chat_turn(history, pending_confirms):
+            async for event in orchestrator.execute_chat_turn(history, pending_confirms, username=current_user["username"]):
                 yield json.dumps(event) + "\n"
                 
         return StreamingResponse(cancel_generator(), media_type="text/event-stream")
 
-    logger.info(f"User approved execution of '{tool_name}' with arguments {arguments}")
+    # Sanitize arguments in log output to avoid log exposure details
+    sanitized_args = {k: (f"<str len={len(v)}>" if isinstance(v, str) else v) for k, v in arguments.items()}
+    logger.info(f"User approved execution of '{tool_name}' with arguments {sanitized_args}")
     
     async def execution_generator():
         yield json.dumps({"type": "trace", "stage": "Tool Execution", "details": f"Executing approved action: {tool_name}"}) + "\n"
@@ -242,7 +284,7 @@ async def confirm_action(request: ConfirmRequest, current_user: dict = Depends(g
             })
             
             # 3. Resume conversation loop to stream final summary
-            async for event in orchestrator.execute_chat_turn(history, pending_confirms):
+            async for event in orchestrator.execute_chat_turn(history, pending_confirms, username=current_user["username"]):
                 yield json.dumps(event) + "\n"
                 
         except Exception as e:

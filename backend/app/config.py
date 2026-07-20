@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     DEFAULT_GEMINI_MODEL: str = "gemini-2.0-flash-lite"
     DEFAULT_ANTHROPIC_MODEL: str = "claude-3-5-sonnet-latest"
 
+    # Embedding settings
+    EMBEDDING_PROVIDER: str = "fastembed"  # 'fastembed', 'sentence-transformers', 'gemini', 'ollama'
+    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"  # or 'all-MiniLM-L6-v2', 'text-embedding-004'
+    RELEVANCE_THRESHOLD: float = 0.45
+
     # Ollama settings (local, free, no API key needed)
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     OLLAMA_MODEL: str = "llama3.2"

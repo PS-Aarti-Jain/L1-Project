@@ -80,15 +80,18 @@ Tone: Professional, direct, helpful, concise.
 """
 
 def local_retrieve_docs(query: str) -> str:
-    """Retrieves document chunks from the Chroma vector store."""
+    """Retrieves document chunks from the Qdrant vector store."""
     try:
         db = get_vector_store()
         results = db.query(query, n_results=5)
-        if not results:
+        threshold = settings.RELEVANCE_THRESHOLD
+        passing_results = [r for r in results if (1.0 - r.get("distance", 1.0)) >= threshold]
+        
+        if not passing_results:
             return "No matching local documentation found."
             
         formatted = []
-        for idx, res in enumerate(results):
+        for idx, res in enumerate(passing_results):
             meta = res["metadata"]
             source = meta.get("source_file", "unknown")
             heading = meta.get("heading_path", "Root")
@@ -266,7 +269,8 @@ class LLMOrchestrator:
     async def execute_chat_turn(
         self, 
         history: List[Dict[str, Any]], 
-        pending_confirms: Dict[str, Dict[str, Any]]
+        pending_confirms: Dict[str, Dict[str, Any]],
+        username: str = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """
         Executes a multi-step conversation turn. Calls tools (RAG/MCP),
@@ -410,13 +414,17 @@ class LLMOrchestrator:
                     if destructive_calls:
                         # Handle destructive tool call interception
                         # Intercept only one at a time for ease of confirmation
+                        import secrets
+                        import time
                         target_call = destructive_calls[0]
-                        conf_id = f"conf-{uuid.uuid4().hex[:8]}"
+                        conf_id = f"conf-{secrets.token_urlsafe(32)}"
                         
                         pending_confirms[conf_id] = {
                             "tool_name": target_call["name"],
                             "arguments": target_call["args"],
-                            "history": history.copy()  # Save history up to this point
+                            "history": history.copy(),  # Save history up to this point
+                            "username": username,
+                            "created_at": time.time()
                         }
                         
                         logger.info(f"Intercepted destructive tool '{target_call['name']}'. Created confirmation '{conf_id}'")
@@ -441,26 +449,33 @@ class LLMOrchestrator:
                             db = get_vector_store()
                             raw_results = db.query(query_str, n_results=5)
                             
-                            # Yield raw results to the frontend for citation caching
-                            yield {"type": "retrieved_chunks", "chunks": raw_results}
+                            # Filter results by relevance threshold
+                            threshold = settings.RELEVANCE_THRESHOLD
+                            passing_results = [r for r in raw_results if (1.0 - r.get("distance", 1.0)) >= threshold]
                             
-                            # Format results for the LLM context
-                            if not raw_results:
-                                result = "No matching local documentation found."
-                            else:
-                                formatted = []
-                                for idx, res in enumerate(raw_results):
-                                    meta = res["metadata"]
-                                    source = meta.get("source_file", "unknown")
-                                    heading = meta.get("heading_path", "Root")
-                                    doc_id = meta.get("chunk_id", f"chunk-{idx}")
-                                    formatted.append(
-                                        f"--- SOURCE: {source} | SECTION: {heading} | ID: {doc_id} ---\n"
-                                        f"{res['document']}\n"
-                                    )
-                                result = "\n".join(formatted)
+                            # Yield raw results to the frontend for citation caching
+                            yield {"type": "retrieved_chunks", "chunks": passing_results}
+                            
+                            if not passing_results:
+                                # Return refusal directly and stop generation!
+                                refusal = "I do not have enough information in the indexed documentation to answer this question."
+                                yield {"type": "token", "token": refusal}
+                                # Add the assistant response to history
+                                history.append({"role": "assistant", "content": refusal})
+                                return
                                 
-                            yield {"type": "trace", "stage": "RAG Retrieval", "details": f"Retrieved documents for query: {query_str}"}
+                            formatted = []
+                            for idx, res in enumerate(passing_results):
+                                meta = res["metadata"]
+                                source = meta.get("source_file", "unknown")
+                                heading = meta.get("heading_path", "Root")
+                                doc_id = meta.get("chunk_id", f"chunk-{idx}")
+                                formatted.append(
+                                    f"--- SOURCE: {source} | SECTION: {heading} | ID: {doc_id} ---\n"
+                                    f"{res['document']}\n"
+                                )
+                            result = "\n".join(formatted)
+                            yield {"type": "trace", "stage": "RAG Retrieval", "details": f"Retrieved {len(passing_results)} relevant documents for query: {query_str}"}
                         else:
                             # Must be github_search_code or other cached MCP tools
                             mcp = get_mcp_client()
@@ -628,12 +643,16 @@ class LLMOrchestrator:
                     })
 
                     if destructive_calls:
+                        import secrets
+                        import time
                         target_call = destructive_calls[0]
-                        conf_id = f"conf-{uuid.uuid4().hex[:8]}"
+                        conf_id = f"conf-{secrets.token_urlsafe(32)}"
                         pending_confirms[conf_id] = {
                             "tool_name": target_call["name"],
                             "arguments": target_call["args"],
-                            "history": history.copy()
+                            "history": history.copy(),
+                            "username": username,
+                            "created_at": time.time()
                         }
                         logger.info(f"Intercepted destructive tool '{target_call['name']}'. Created confirmation '{conf_id}'")
                         yield {
@@ -654,22 +673,34 @@ class LLMOrchestrator:
                             query_str = args.get("query", "")
                             db = get_vector_store()
                             raw_results = db.query(query_str, n_results=5)
-                            yield {"type": "retrieved_chunks", "chunks": raw_results}
-                            if not raw_results:
-                                result = "No matching local documentation found."
-                            else:
-                                formatted = []
-                                for idx, res in enumerate(raw_results):
-                                    meta = res["metadata"]
-                                    source = meta.get("source_file", "unknown")
-                                    heading = meta.get("heading_path", "Root")
-                                    doc_id = meta.get("chunk_id", f"chunk-{idx}")
-                                    formatted.append(
-                                        f"--- SOURCE: {source} | SECTION: {heading} | ID: {doc_id} ---\n"
-                                        f"{res['document']}\n"
-                                    )
-                                result = "\n".join(formatted)
-                            yield {"type": "trace", "stage": "RAG Retrieval", "details": f"Retrieved documents for query: {query_str}"}
+                            
+                            # Filter results by relevance threshold
+                            threshold = settings.RELEVANCE_THRESHOLD
+                            passing_results = [r for r in raw_results if (1.0 - r.get("distance", 1.0)) >= threshold]
+                            
+                            # Yield raw results to the frontend for citation caching
+                            yield {"type": "retrieved_chunks", "chunks": passing_results}
+                            
+                            if not passing_results:
+                                # Return refusal directly and stop generation!
+                                refusal = "I do not have enough information in the indexed documentation to answer this question."
+                                yield {"type": "token", "token": refusal}
+                                # Add the assistant response to history
+                                history.append({"role": "assistant", "content": refusal})
+                                return
+                                
+                            formatted = []
+                            for idx, res in enumerate(passing_results):
+                                meta = res["metadata"]
+                                source = meta.get("source_file", "unknown")
+                                heading = meta.get("heading_path", "Root")
+                                doc_id = meta.get("chunk_id", f"chunk-{idx}")
+                                formatted.append(
+                                    f"--- SOURCE: {source} | SECTION: {heading} | ID: {doc_id} ---\n"
+                                    f"{res['document']}\n"
+                                )
+                            result = "\n".join(formatted)
+                            yield {"type": "trace", "stage": "RAG Retrieval", "details": f"Retrieved {len(passing_results)} relevant documents for query: {query_str}"}
                         else:
                             mcp = get_mcp_client()
                             result = await mcp.call_tool(name, args)

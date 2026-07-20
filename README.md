@@ -70,10 +70,12 @@ This project is built from scratch as a single, coherent application demonstrati
 DevAssist features a built-in automated **Quality Audit Pipeline** to measure retrieval accuracy and factual alignment. Results are logged to the file system and displayed in real-time in the React dashboard's control panel.
 
 ### Monitored Metrics:
-* **Retrieval Recall@3**: Measures if the target documentation chunk is retrieved within the top 3 results (Target $\ge 80\%$).
-* **Lexical Groundedness**: Resilient, zero-latency metric checking if expected keywords and technical phrases appear in the generated response (Target $\ge 60\%$).
-* **LLM Judge Auditor**: Uses an LLM-as-a-judge prompt to score response faithfulness.
-* **Latency**: Logs response times, tracking performance speedups.
+* **Retrieval Recall@5**: Measures if the target documentation chunk is retrieved within the top 5 results (Goal: ≥ 80%).
+* **Lexical Groundedness**: Resilient, zero-latency metric checking if expected keywords and technical phrases appear in the generated response (Goal: ≥ 60%).
+* **LLM Judge Auditor**: Uses an LLM-as-a-judge prompt to score response faithfulness. Failures are recorded as "Not evaluated" — never substituted with a perfect score.
+* **Latency**: Logs response times per query.
+
+See [`evaluation_report.md`](./evaluation_report.md) for a committed run of the evaluation pipeline.
 
 ---
 
@@ -82,7 +84,10 @@ DevAssist features a built-in automated **Quality Audit Pipeline** to measure re
 * **Least Privilege Scope**: The GitHub Personal Access Token (PAT) used by the MCP server is scoped strictly to a target repository (`contents:read` and `issues:write`).
 * **Human-in-the-loop (HI-Loop) Interception**: Destructive write actions are suspended on the backend. No code executes until an explicit user approval click arrives on the `/api/confirm` endpoint.
 * **Prompt Injection Defense**: Retrieved documentation content is wrapped inside explicit untrusted tags in the system prompt. The model is strictly instructed that instructions found in retrieved documents must never be followed.
-* **Bulletproof Local Failover (Ollama)**: Configured the LLM orchestrator to catch all API errors (including quota exhaustion, expired keys, payment credit errors, and DNS dropouts) from *both* Gemini and OpenRouter. The orchestrator now instantly redirects the session to the local Ollama instance (`llama3.1:8b`) with a visual trace notification, ensuring the developer experience is never blocked.
+* **Resilient Local Failover (Ollama)**: The LLM orchestrator catches API errors from Gemini and OpenRouter (quota exhaustion, expired keys, DNS dropouts) and redirects to a local Ollama instance when available.
+* **Secure MCP Confirmation Tokens**: Pending destructive-action confirmations use cryptographically random, full-length tokens (`secrets.token_urlsafe(32)`). Each pending action is bound to the originating user session and expires after 10 minutes. Edited arguments are revalidated against the tool schema and repository scope at execution time.
+
+> ⚠️ **Demo Authentication Notice**: The default username/password (`admin`/`password123`), JWT secret, and SHA-256 password hashing are for **local development use only**. Tokens are stored in browser local storage. Do not expose this configuration to any public or production network.
 
 ---
 
@@ -101,7 +106,16 @@ DevAssist features a built-in automated **Quality Audit Pipeline** to measure re
    ```bash
    cp backend/.env.example backend/.env
    ```
-2. Open the [backend/.env](file:///c:/RAG-Project/backend/.env) file to configure your desired execution mode.
+2. Open `backend/.env` and configure your desired execution mode.
+
+#### Embedding Provider Configuration
+Embedding and generation providers are configured separately. By default the system uses the **FastEmbed** local model for embeddings (no API key required). You can override these in `.env`:
+```ini
+# Embedding settings (independent of LLM generation provider)
+EMBEDDING_PROVIDER=fastembed          # Options: fastembed, sentence-transformers, gemini, ollama
+EMBEDDING_MODEL=BAAI/bge-small-en-v1.5
+RELEVANCE_THRESHOLD=0.45              # Chunks below this combined score are filtered out
+```
 
 #### Mode A: 100% Free Local Execution (Ollama)
 No API keys or cloud accounts needed.
@@ -174,7 +188,7 @@ We provide four verification scripts in `backend/tests/`:
    python backend/tests/test_integration.py
    ```
 
-4. **RAG Quality Evaluation Pipeline**: Measures RAG accuracy, including Retrieval Recall@3, response faithfulness (Groundedness via LLM-as-a-judge), and latency over a golden test dataset. This can also be triggered directly from the React dashboard UI:
+4. **RAG Quality Evaluation Pipeline**: Measures RAG accuracy, including Retrieval Recall@5, lexical groundedness, and latency over 9 golden test cases (including unanswerable, adversarial, paraphrase-only, and conflicting-source cases). LLM-judge failures are recorded as `Not evaluated` — not substituted with a perfect 1.0. Results are saved to `backend/tests/eval_results.json` and a summary is committed in [`evaluation_report.md`](./evaluation_report.md). This can also be triggered from the React dashboard UI:
    ```bash
    python backend/tests/test_evaluation.py
    ```

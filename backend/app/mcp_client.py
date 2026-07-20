@@ -121,7 +121,8 @@ class MCPClientManager:
         if not self.session:
             raise RuntimeError("MCP client session is not active. Call start() first.")
             
-        logger.info(f"Calling MCP tool '{tool_name}' with arguments: {arguments}")
+        sanitized_args = {k: (f"<str len={len(v)}>" if isinstance(v, str) else v) for k, v in arguments.items()}
+        logger.info(f"Calling MCP tool '{tool_name}' with arguments: {sanitized_args}")
         try:
             result = await self.session.call_tool(tool_name, arguments)
             

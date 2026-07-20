@@ -50,7 +50,7 @@ def get_auth_headers():
     except Exception as e:
         raise RuntimeError(f"Failed to connect to backend server at {SERVER_URL}: {str(e)}")
 
-def run_judge_evaluation(context: str, answer: str) -> float:
+def run_judge_evaluation(context: str, answer: str):
     """Invokes the LLM provider to evaluate groundedness. Prefers Gemini if key is present."""
     judge_prompt = JUDGE_PROMPT_TEMPLATE.format(context=context, answer=answer)
     
@@ -81,7 +81,7 @@ def run_judge_evaluation(context: str, answer: str) -> float:
             raw_text = res.choices[0].message.content
         else:
             print(f"Unsupported judge configuration")
-            return 1.0  # Safe default if unsupported
+            return "Not evaluated"
             
         # Parse JSON from response
         # Clean up any potential markdown ticks in LLM output
@@ -96,14 +96,9 @@ def run_judge_evaluation(context: str, answer: str) -> float:
         return float(data.get("groundedness_score", 1.0))
         
     except Exception as e:
-        print(f"Warning: LLM-as-a-judge evaluation failed ({str(e)}). Defaulting to 1.0.")
-        return 1.0
+        print(f"Warning: LLM-as-a-judge evaluation failed ({str(e)}).")
+        return "Not evaluated"
 
-def run_evaluation():
-    print("==========================================================")
-    print("         RUNNING AUTOMATED RAG EVALUATION PIPELINE        ")
-    print("==========================================================\n")
-    
 def run_lexical_evaluation(answer: str, expected_concepts: list[str]) -> float:
     """Calculates the proportion of expected concepts present in the generated answer."""
     if not expected_concepts:
@@ -182,7 +177,11 @@ def run_evaluation():
             if meta.get("source_file"):
                 retrieved_sources.append(meta.get("source_file"))
                 
-        recall = 1.0 if target in retrieved_sources else 0.0
+        if target == "nonexistent.md":
+            # For unanswerable or injection queries, recall is 1.0 if we retrieved no chunks
+            recall = 1.0 if not retrieved_chunks else 0.0
+        else:
+            recall = 1.0 if target in retrieved_sources else 0.0
         
         # 3. Format Context for Auditor
         context_parts = []
@@ -196,12 +195,12 @@ def run_evaluation():
         groundedness = run_lexical_evaluation(collected_text, expected_concepts)
         
         # Optional: Run LLM-as-a-judge if Gemini/Ollama are configured and healthy
-        llm_judge = 1.0
+        llm_judge = "Not evaluated"
         if settings.GEMINI_API_KEY or settings.LLM_PROVIDER.lower() == "ollama":
-            # Attempt LLM-as-a-judge, but fallback silently to 1.0 if rate-limited
+            # Attempt LLM-as-a-judge
             llm_judge = run_judge_evaluation(context_str, collected_text)
             
-        print(f"  Recall@3: {recall:.1f} | Lexical Groundedness: {groundedness*100:.0f}% | LLM Judge: {llm_judge:.1f} | Latency: {latency:.2f}s")
+        print(f"  Recall@5: {recall:.1f} | Lexical Groundedness: {groundedness*100:.0f}% | LLM Judge: {llm_judge} | Latency: {latency:.2f}s")
         print("-" * 58)
         
         results.append({
@@ -222,16 +221,19 @@ def run_evaluation():
         
     avg_recall = sum(r["recall"] for r in results) / total
     avg_groundedness = sum(r["groundedness"] for r in results) / total
-    avg_llm_judge = sum(r["llm_judge"] for r in results) / total
+    
+    evaluated_judges = [r["llm_judge"] for r in results if isinstance(r["llm_judge"], (int, float))]
+    avg_llm_judge = sum(evaluated_judges) / len(evaluated_judges) if evaluated_judges else "Not evaluated"
+    
     avg_latency = sum(r["latency"] for r in results) / total
     
     print("\n" + "="*58)
     print("                 RAG EVALUATION SUMMARY REPORT            ")
     print("="*58)
     print(f"Total Test Cases Evaluated : {total}")
-    print(f"Mean Retrieval Recall@3    : {avg_recall*100:.1f}%")
+    print(f"Mean Retrieval Recall@5    : {avg_recall*100:.1f}%")
     print(f"Mean Lexical Groundedness  : {avg_groundedness*100:.1f}%")
-    print(f"Mean LLM Judge Auditor     : {avg_llm_judge*100:.1f}%")
+    print(f"Mean LLM Judge Auditor     : {avg_llm_judge*100:.1f}%" if isinstance(avg_llm_judge, (int, float)) else f"Mean LLM Judge Auditor     : {avg_llm_judge}")
     print(f"Mean Response Latency      : {avg_latency:.2f}s")
     print("="*58 + "\n")
     

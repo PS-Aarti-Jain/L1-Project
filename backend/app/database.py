@@ -66,7 +66,10 @@ class HybridReranker:
                 "id": candidate["id"],
                 "document": candidate["document"],
                 "metadata": candidate["metadata"],
-                "distance": new_distance
+                "distance": new_distance,
+                "raw_semantic_score": candidate.get("raw_semantic_score", semantic_score),
+                "lexical_score": min(lex_score, 1.0),
+                "combined_score": combined_score
             })
 
         # Sort by distance ascending (closest first)
@@ -92,11 +95,23 @@ class VectorStore:
         self.collection = self
 
     def _get_embedding_dimension(self) -> int:
-        """Determines the correct vector embedding dimension for Qdrant collection."""
-        if settings.LLM_PROVIDER.lower() in ["gemini", "openrouter"]:
-            return 768  # text-embedding-004 generates 768-dim vectors
-            
-        if settings.LLM_PROVIDER.lower() == "ollama":
+        """Determines the correct vector embedding dimension for the chosen embedding provider."""
+        provider = settings.EMBEDDING_PROVIDER.lower()
+        if provider == "fastembed":
+            return 384
+        elif provider == "sentence-transformers":
+            try:
+                if not hasattr(self, "_sentence_transformer_model"):
+                    from sentence_transformers import SentenceTransformer
+                    model_name = settings.EMBEDDING_MODEL or "all-MiniLM-L6-v2"
+                    self._sentence_transformer_model = SentenceTransformer(model_name)
+                return self._sentence_transformer_model.get_sentence_embedding_dimension()
+            except Exception:
+                pass
+            return 384
+        elif provider == "gemini":
+            return 768
+        elif provider == "ollama":
             try:
                 res = requests.post(
                     f"{settings.OLLAMA_BASE_URL}/api/embeddings",
@@ -107,7 +122,8 @@ class VectorStore:
                     return len(res.json()["embedding"])
             except Exception:
                 pass
-        return 4096  # Fallback default dimension size for llama3.1
+            return 4096
+        return 384
 
     def _ensure_collection(self):
         """Creates the Qdrant collection with HNSW indexing if it doesn't exist."""
@@ -130,8 +146,33 @@ class VectorStore:
             logger.error(f"Failed to verify or create Qdrant collection: {str(e)}")
 
     def _get_embedding(self, text: str) -> list[float]:
-        """Fetches embedding vector via active provider API."""
-        if settings.LLM_PROVIDER.lower() == "ollama":
+        """Fetches embedding vector via chosen provider."""
+        provider = settings.EMBEDDING_PROVIDER.lower()
+        if provider == "fastembed":
+            if not hasattr(self, "_fastembed_model"):
+                from fastembed import TextEmbedding
+                model_name = settings.EMBEDDING_MODEL or "BAAI/bge-small-en-v1.5"
+                self._fastembed_model = TextEmbedding(model_name=model_name)
+            embeddings = list(self._fastembed_model.embed([text]))
+            return [float(x) for x in embeddings[0]]
+        elif provider == "sentence-transformers":
+            if not hasattr(self, "_sentence_transformer_model"):
+                from sentence_transformers import SentenceTransformer
+                model_name = settings.EMBEDDING_MODEL or "all-MiniLM-L6-v2"
+                self._sentence_transformer_model = SentenceTransformer(model_name)
+            embedding = self._sentence_transformer_model.encode(text)
+            return [float(x) for x in embedding]
+        elif provider == "gemini":
+            from google import genai
+            if not settings.GEMINI_API_KEY:
+                raise ValueError("GEMINI_API_KEY is not configured but gemini embedding provider is selected.")
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            response = client.models.embed_content(
+                model="text-embedding-004",
+                contents=[text]
+            )
+            return [float(x) for x in response.embeddings[0].values]
+        elif provider == "ollama":
             res = requests.post(
                 f"{settings.OLLAMA_BASE_URL}/api/embeddings",
                 json={"model": settings.OLLAMA_MODEL, "prompt": text},
@@ -139,24 +180,17 @@ class VectorStore:
             )
             if res.status_code != 200:
                 raise RuntimeError(f"Ollama embedding failed: {res.text}")
-            return res.json()["embedding"]
+            return [float(x) for x in res.json()["embedding"]]
         else:
-            # Fallback/default to Gemini text-embedding-004
-            from google import genai
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
-            response = client.models.embed_content(
-                model="text-embedding-004",
-                contents=[text]
-            )
-            return response.embeddings[0].values
+            raise ValueError(f"Unsupported embedding provider: {provider}")
 
     def add_chunks(self, ids: list[str], documents: list[str], metadatas: list[dict]):
-        """Adds or updates document chunks in Qdrant."""
+        """Adds or updates document chunks in Qdrant. Rejects indexing if embedding fails."""
         if not ids:
             return
 
-        has_api_key = bool(settings.GEMINI_API_KEY) or settings.LLM_PROVIDER.lower() == "ollama"
-        logger.info(f"Adding {len(ids)} chunks to Qdrant (Embedding API Active: {has_api_key})")
+        expected_dim = self._get_embedding_dimension()
+        logger.info(f"Adding {len(ids)} chunks to Qdrant using embedding provider: {settings.EMBEDDING_PROVIDER}")
         
         points = []
         for idx in range(len(ids)):
@@ -164,28 +198,28 @@ class VectorStore:
             doc_text = documents[idx]
             meta = metadatas[idx]
             
-            embedding = None
-            if has_api_key:
-                try:
-                    embedding = self._get_embedding(doc_text)
-                except Exception as e:
-                    logger.error(f"Error fetching embedding for chunk {chunk_id}: {str(e)}")
+            try:
+                embedding = self._get_embedding(doc_text)
+            except Exception as e:
+                logger.error(f"Embedding generation failed for chunk {chunk_id}: {str(e)}")
+                raise RuntimeError(f"Embedding failed: {str(e)}") from e
             
-            # If embedding fails or is empty, use a dummy zero vector to keep schema consistent
             if not embedding:
-                embedding = [0.0] * self._get_embedding_dimension()
+                raise ValueError(f"Embedding generation returned empty vector for chunk {chunk_id}")
+                
+            if len(embedding) != expected_dim:
+                raise ValueError(f"Embedding dimension mismatch: expected {expected_dim}, got {len(embedding)}")
 
-            # Qdrant requires valid UUID strings. We generate a stable, deterministic UUID from the chunk_id
             stable_uuid = str(uuid.uuid5(uuid.NAMESPACE_DNS, chunk_id))
 
             points.append(PointStruct(
                 id=stable_uuid,
                 vector=embedding,
                 payload={
-                    "id": chunk_id,  # Save the original string ID
+                    "id": chunk_id,
                     "document": doc_text,
                     "metadata": meta,
-                    "has_real_embedding": has_api_key
+                    "has_real_embedding": True
                 }
             ))
 
@@ -217,7 +251,11 @@ class VectorStore:
         """Queries Qdrant using HNSW vector similarity, then refines with Hybrid Reranking."""
         logger.info(f"Querying Qdrant index for: '{query_text}' (filter: {source_filter})")
         
-        has_embedding_service = bool(settings.GEMINI_API_KEY) or settings.LLM_PROVIDER.lower() == "ollama"
+        provider = settings.EMBEDDING_PROVIDER.lower()
+        has_embedding_service = True
+        if provider == "gemini" and not settings.GEMINI_API_KEY:
+            has_embedding_service = False
+            
         results = []
 
         if has_embedding_service:
@@ -239,21 +277,22 @@ class VectorStore:
                 
                 # 3. Retrieve candidates (n_results * 3, up to 15) for rerank cross-examination
                 candidate_limit = max(12, n_results * 3)
-                search_results = self.client.search(
+                search_results = self.client.query_points(
                     collection_name=self.collection_name,
-                    query_vector=query_vector,
+                    query=query_vector,
                     query_filter=filter_obj,
                     limit=candidate_limit,
                     with_payload=True
                 )
                 
                 candidates = []
-                for r in search_results:
+                for r in search_results.points:
                     candidates.append({
-                        "id": r.payload["id"],  # Use original string ID
+                        "id": r.payload["id"],
                         "document": r.payload["document"],
                         "metadata": r.payload["metadata"],
-                        "distance": 1.0 - r.score  # Convert cosine score to distance format
+                        "distance": 1.0 - r.score,
+                        "raw_semantic_score": r.score
                     })
                 
                 # 4. Apply Hybrid Lexical-Semantic Reranker
@@ -267,7 +306,6 @@ class VectorStore:
         if not results:
             logger.info("Using scroll-based keyword search fallback")
             try:
-                # Scroll up to 100 entries
                 scroll_filter = None
                 if source_filter:
                     scroll_filter = Filter(
@@ -291,11 +329,13 @@ class VectorStore:
                     score = compute_keyword_score(query_text, record.payload["document"])
                     if score > 0:
                         candidates.append({
-                            "id": record.payload["id"],  # Use original string ID
+                            "id": record.payload["id"],
                             "document": record.payload["document"],
                             "metadata": record.payload["metadata"],
-                            # Map keyword scores to inverse distance matching logic
-                            "distance": 1.0 / (score + 0.001)
+                            "distance": 1.0 - min(score, 0.99),
+                            "raw_semantic_score": 0.0,
+                            "lexical_score": min(score, 1.0),
+                            "combined_score": min(score, 1.0)
                         })
                 candidates.sort(key=lambda x: x["distance"])
                 results = candidates[:n_results]
